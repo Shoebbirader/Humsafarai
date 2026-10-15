@@ -4,8 +4,9 @@ import * as XLSX from "xlsx";
 export type Reconciliation = {
   source: { pdfName: string; excelName: string; period: string; operator: string; invoiceNo: string };
   pdf: { booking: number; cancellation: number; cancellationCharges: number; busCancellation: number; exceptionalRefund: number; dynamicPricing: number; operatorOffers: number; ssPartner: number; gds: number; tds: number; rescheduleExcess: number; srp: number; sponsored: number; nova: number; invoiceBeforeAdjustment: number; adjustment: number; finalSettlement: number };
-  excel: { bookingRows: number; rawBookingFare: number; rawBookingNet: number; bookingFare: number; bookingNet: number; activeBookingFare: number; activeBookingNet: number; embeddedCancellationFare: number; cancellationRows: number; cancellationFare: number; cancellationNet: number; subscriptionTotal: number; subscriptionItems: { label: string; amount: number; matched: string }[] };
+  excel: { bookingRows: number; rawBookingFare: number; rawBookingNet: number; bookingFare: number; bookingNet: number; activeBookingFare: number; activeBookingNet: number; embeddedCancellationFare: number; overlapCount: number; cancellationRows: number; cancellationFare: number; cancellationNet: number; subscriptionTotal: number; subscriptionItems: { label: string; amount: number; matched: string }[] };
   checks: { label: string; status: "matched" | "review" | "info"; detail: string; variance?: number }[];
+  differences: { label: string; pdfAmount: number; excelAmount: number; variance: number; explanation: string; status: "matched" | "review" }[];
   bridge: { label: string; amount: number; kind: "base" | "deduction" | "addition" | "final" }[];
 };
 
@@ -125,7 +126,7 @@ function parseSheet(workbook: XLSX.WorkBook) {
   const rawBookingNet = sum(bookingRows, netCol);
   const embeddedCancellationFare = sum(embedded, fareCol);
   const embeddedCancellationNet = sum(embedded, netCol);
-  return { bookingRows: bookingRows.length, rawBookingFare, rawBookingNet, bookingFare: round(rawBookingFare - embeddedCancellationFare), bookingNet: round(rawBookingNet - embeddedCancellationNet), activeBookingFare: round(rawBookingFare - embeddedCancellationFare), activeBookingNet: round(rawBookingNet - embeddedCancellationNet), embeddedCancellationFare, cancellationRows: cancellationRows.length, cancellationFare: sum(cancellationRows, fareCol), cancellationNet: sum(cancellationRows, netCol), subscriptionTotal: round(subscriptionItems.reduce((total, item) => total + item.amount, 0)), subscriptionItems };
+  return { bookingRows: bookingRows.length, rawBookingFare, rawBookingNet, bookingFare: round(rawBookingFare - embeddedCancellationFare), bookingNet: round(rawBookingNet - embeddedCancellationNet), activeBookingFare: round(rawBookingFare - embeddedCancellationFare), activeBookingNet: round(rawBookingNet - embeddedCancellationNet), embeddedCancellationFare, overlapCount: embedded.length, cancellationRows: cancellationRows.length, cancellationFare: sum(cancellationRows, fareCol), cancellationNet: sum(cancellationRows, netCol), subscriptionTotal: round(subscriptionItems.reduce((total, item) => total + item.amount, 0)), subscriptionItems };
 }
 
 export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdfName: string, excelName: string): Promise<Reconciliation> {
@@ -151,5 +152,11 @@ export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdf
     { label: "Recon adjustment", amount: 1035, kind: "addition" },
     { label: "Final settlement", amount: final, kind: "final" },
   ];
-  return { source: { pdfName, excelName, period: pdf.period, operator: pdf.operator, invoiceNo: pdf.invoiceNo }, pdf, excel: { ...excel, subscriptionItems }, checks, bridge };
+  const differences: Reconciliation["differences"] = [
+    { label: "Booking ticket fare", pdfAmount: pdf.booking, excelAmount: excel.activeBookingFare, variance: round(excel.activeBookingFare - pdf.booking), explanation: `${excel.overlapCount} PNRs appear in both workbook sections; Excel active fare removes ${excel.embeddedCancellationFare.toLocaleString("en-IN")} as overlap.`, status: close(excel.activeBookingFare, pdf.booking) ? "matched" : "review" },
+    { label: "Cancellation classification", pdfAmount: pdf.cancellation, excelAmount: round(excel.cancellationFare + excel.embeddedCancellationFare), variance: round(excel.cancellationFare + excel.embeddedCancellationFare - pdf.cancellation), explanation: "Excel contains a separate cancellation section plus cancellation PNRs embedded in bookings; these populations are not the same as the PDF category total.", status: close(excel.cancellationFare + excel.embeddedCancellationFare, pdf.cancellation) ? "matched" : "review" },
+    { label: "Subscription/detail deductions", pdfAmount: subscriptionMatched, excelAmount: excel.subscriptionTotal, variance: round(excel.subscriptionTotal - subscriptionMatched), explanation: "Dynamic Pricing, SRP, Sponsored Listing and Nova are matched to individual or grouped Excel detail lines.", status: close(excel.subscriptionTotal, subscriptionMatched) ? "matched" : "review" },
+    { label: "Final settlement formula", pdfAmount: final, excelAmount: computedFinal, variance: round(computedFinal - final), explanation: "PDF invoice amount before adjustment plus SS and reconciliation adjustments.", status: close(computedFinal, final) ? "matched" : "review" },
+  ];
+  return { source: { pdfName, excelName, period: pdf.period, operator: pdf.operator, invoiceNo: pdf.invoiceNo }, pdf, excel: { ...excel, subscriptionItems }, checks, differences, bridge };
 }

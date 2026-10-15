@@ -8,6 +8,7 @@
 - [x] The result identifies booking rows that overlap cancellation PNRs and keeps them separate from active bookings.
 - [x] The result reconciles subscription/detail values to PDF deductions and labels exact matches, variances, and grouped matches.
 - [x] The result displays invoice amount before adjustment, each adjustment, final settlement, and any variance with formulas and source labels.
+- [x] The result includes a dedicated “Where Differences Occur” ledger showing PDF amount, Excel amount, variance, status, and an explanation for booking, cancellation, subscription, and final-settlement comparisons.
 
 ## Shareable report
 - [x] The user can download a polished PDF report containing source files, key settlement numbers, bridge calculations, subscription match, and exception notes.

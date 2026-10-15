@@ -60,7 +60,9 @@ async function startServer() {
     sourceRows.forEach(([label, value]) => { doc.fillColor(muted).fontSize(10).text(label, 58, doc.y); doc.fillColor(navy).text(value, 400, doc.y - 10, { width: 135, align: "right" }); doc.moveDown(0.35); });
     heading("3. Checks and exceptions");
     result.checks.forEach(check => { const color = check.status === "matched" ? teal : check.status === "info" ? amber : "#9a3412"; doc.fillColor(color).fontSize(10).font("Helvetica-Bold").text(`${check.status.toUpperCase()}  ${check.label}`); doc.fillColor(muted).font("Helvetica").fontSize(9).text(check.detail, { width: 475 }); doc.moveDown(0.45); });
-    heading("4. Subscription/detail match");
+    heading("4. Where differences occur");
+    (result.differences ?? []).forEach((item: { label: string; pdfAmount: number; excelAmount: number; variance: number; explanation: string; status: string }) => { doc.fillColor(item.status === "matched" ? teal : amber).fontSize(10).font("Helvetica-Bold").text(`${item.status.toUpperCase()}  ${item.label}`); doc.fillColor(navy).font("Helvetica").text(`PDF ${inr(item.pdfAmount)}   |   Excel ${inr(item.excelAmount)}   |   Variance ${item.variance >= 0 ? "+" : ""}${inr(item.variance)}`, { width: 475 }); doc.fillColor(muted).fontSize(8).text(item.explanation, { width: 475 }); doc.moveDown(0.45); });
+    heading("5. Subscription/detail match");
     result.pdf && [ ["Dynamic Pricing", result.pdf.dynamicPricing], ["SRP", result.pdf.srp], ["Sponsored Listing", result.pdf.sponsored], ["Nova", result.pdf.nova] ].forEach(([label, value]) => { const matched = result.excel.subscriptionItems?.find((item: { label: string }) => item.label === label)?.matched ?? "Review"; doc.fillColor(navy).fontSize(10).text(`${String(label)}  ·  ${matched}`, 58, doc.y); doc.text(inr(Number(value)), 400, doc.y - 10, { width: 135, align: "right" }); doc.moveDown(0.35); });
     doc.moveDown(1).fillColor(muted).fontSize(8).text("Prepared by ReconPilot. Amounts are extracted from the uploaded payment advice and Excel export. Review any item marked REVIEW before external submission.", { width: 500 });
     doc.end();
