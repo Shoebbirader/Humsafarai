@@ -1,11 +1,5 @@
 {
   "buildCommand": "pnpm build",
   "outputDirectory": "dist/public",
-  "framework": "vite",
-  "functions": {
-    "api/**/*.ts": {
-      "runtime": "nodejs22.x",
-      "maxDuration": 60
-    }
-  }
+  "framework": "vite"
 }
