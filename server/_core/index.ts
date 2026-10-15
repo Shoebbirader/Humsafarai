@@ -41,6 +41,7 @@ async function startServer() {
     const result = req.body as Reconciliation;
     if (!result?.pdf || !result?.excel) return res.status(400).json({ error: "A reconciliation result is required." });
     const fontDir = path.resolve(process.cwd(), "server/assets");
+    const logoPath = path.resolve(process.cwd(), "client/public/humsafarai-logo.png");
     const doc = new PDFDocument({ size: "A4", margin: 44, bufferPages: true, info: { Title: "HumsafarAI Settlement Reconciliation", Author: "HumsafarAI" } });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="humsafarAI-${result.source.invoiceNo || "report"}.pdf"`);
@@ -56,7 +57,7 @@ async function startServer() {
     const section = (number: string, title: string) => { if (doc.y > 700) doc.addPage(); doc.moveDown(0.7); doc.fillColor(teal).font(bold).fontSize(9).text(`${number}  /  ${title.toUpperCase()}`, 44, doc.y, { width: 507 }); doc.moveDown(0.28); rule(); doc.moveDown(0.55); };
     const label = (text: string, x: number, y: number, width = 150) => doc.fillColor(muted).font(bold).fontSize(7.5).text(text.toUpperCase(), x, y, { width, characterSpacing: 0.8 });
     const tableRow = (left: string, right: string, emphasis = false) => { const y = doc.y; doc.fillColor(emphasis ? ink : muted).font(emphasis ? "Helvetica-Bold" : "Helvetica").fontSize(emphasis ? 10.5 : 9.5).text(left, 58, y, { width: 330 }); doc.fillColor(emphasis ? teal : ink).font(emphasis ? "Helvetica-Bold" : "Helvetica").text(right, 400, y, { width: 135, align: "right" }); doc.moveDown(0.38); rule(); doc.moveDown(0.38); };
-    const drawHeader = () => { doc.save(); doc.fillColor(teal).rect(44, 26, 24, 4).fill(); doc.fillColor(navy).font(bold).fontSize(8).text("HUMSAFARAI", 76, 24); doc.fillColor(muted).font(regular).fontSize(7.5).text("SETTLEMENT INTELLIGENCE", 76, 36); doc.restore(); };
+    const drawHeader = () => { doc.save(); doc.image(logoPath, 44, 18, { fit: [30, 30] }); doc.fillColor(navy).font(bold).fontSize(8).text("HUMSAFARAI", 82, 24); doc.fillColor(muted).font(regular).fontSize(7.5).text("SETTLEMENT INTELLIGENCE", 82, 36); doc.restore(); };
     doc.on("pageAdded", drawHeader);
     drawHeader();
     doc.y = 76;
