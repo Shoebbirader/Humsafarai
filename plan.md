@@ -1,7 +1,7 @@
-# ReconPilot plan
+# HumsafarAI plan
 
 ## Product scope
-ReconPilot reconciles a payment-advice PDF against a detailed XLS/XLSX export. It extracts visible PDF summary values, parses workbook booking/cancellation and subscription sheets, prevents double-counting cancellation-marked booking rows, and produces an auditable settlement bridge with downloadable PDF output.
+HumsafarAI reconciles a payment-advice PDF against a detailed XLS/XLSX export. It extracts visible PDF summary values, parses workbook booking/cancellation and subscription sheets, prevents double-counting cancellation-marked booking rows, and produces an auditable settlement bridge with downloadable PDF output.
 
 ## Implementation
 - React/Vite frontend with a focused finance-workbench layout.

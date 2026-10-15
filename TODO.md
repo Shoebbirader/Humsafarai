@@ -1,4 +1,4 @@
-# ReconPilot outcomes
+# HumsafarAI outcomes
 
 ## Upload and parse source files
 - [x] The app accepts one payment-advice PDF and one XLS/XLSX export and shows their filenames and processing state.
