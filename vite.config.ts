@@ -188,6 +188,10 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // The managed HTTPS preview proxies HTTP but does not expose Vite's
+    // localhost:5173 WebSocket endpoint. Disable HMR to avoid a noisy,
+    // failing websocket attempt in the embedded preview.
+    hmr: false,
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",
