@@ -207,9 +207,24 @@ function parseSheet(workbook: XLSX.WorkBook) {
   });
   const main = sections.find(section => /payment/i.test(section.label)) ?? sections[0];
   const cancellationSections = sections.filter(section => /(cancellation|bus cancelled|exceptional refund)/i.test(section.label));
-  const cancellationRows = cancellationSections.flatMap(section => section.data);
+  // A PNR can appear in more than one cancellation subsection (for example
+  // both "Cancellation" and "Bus Cancelled"). Count it once so cancellation
+  // totals and overlap removal cannot inflate the comparison.
+  const cancellationRows = Array.from(
+    new Map(
+      cancellationSections
+        .flatMap(section => section.data)
+        .map(row => [String(row[1]).trim(), row] as const),
+    ).values(),
+  );
   const cancellationPnrs = new Set(cancellationRows.map(row => String(row[1]).trim()));
-  const embedded = main.data.filter(row => cancellationPnrs.has(String(row[1]).trim()));
+  const embedded = Array.from(
+    new Map(
+      main.data
+        .filter(row => cancellationPnrs.has(String(row[1]).trim()))
+        .map(row => [String(row[1]).trim(), row] as const),
+    ).values(),
+  );
   const sum = (list: unknown[][], index: number) => round(list.reduce((total, row) => total + valueMoney(row[index]), 0));
 
   const subscriptionSheet = workbook.SheetNames.map(name => workbook.Sheets[name]).find(candidate => {

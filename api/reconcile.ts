@@ -33,7 +33,17 @@ export default function handler(req: any, res: any) {
           const pdf = files?.pdf?.[0];
           const excel = files?.excel?.[0];
           if (!pdf) return res.status(400).json({ error: "Upload a payment-advice PDF and the Excel export." });
-          const summary = req.body?.excelSummary ? JSON.parse(req.body.excelSummary) as ExcelSummary : null;
+          let summary: ExcelSummary | null = null;
+          if (req.body?.excelSummary) {
+            try {
+              summary = JSON.parse(req.body.excelSummary) as ExcelSummary;
+            } catch {
+              return res.status(400).json({ error: "The Excel summary is not valid JSON. Please select the workbook again." });
+            }
+            if (!summary || !Array.isArray(summary.subscriptionItems) || !Number.isFinite(summary.rawBookingNet)) {
+              return res.status(400).json({ error: "The Excel summary is incomplete. Please select the workbook again." });
+            }
+          }
           if (!summary && !excel) return res.status(400).json({ error: "The Excel summary is missing. Please select the workbook again." });
           const result = summary
             ? await reconcileParsedExcel(pdf.buffer, summary, pdf.originalname, "browser-normalized Excel export")
