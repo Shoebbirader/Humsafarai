@@ -10,7 +10,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import multer from "multer";
 import PDFDocument from "pdfkit";
-import { reconcileFiles, type Reconciliation } from "../reconcile";
+import { reconcileFiles, reconcileParsedExcel, type Reconciliation, type ExcelSummary } from "../reconcile";
 
 async function startServer() {
   const app = express();
@@ -33,12 +33,14 @@ async function startServer() {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] };
       const pdf = files?.pdf?.[0];
       const excel = files?.excel?.[0];
-      if (!pdf || !excel) return res.status(400).json({ error: "Upload both a payment-advice PDF and an Excel export." });
+      if (!pdf) return res.status(400).json({ error: "Upload a payment-advice PDF and the Excel export." });
       const pdfName = pdf.originalname.toLowerCase();
-      const excelName = excel.originalname.toLowerCase();
+      const excelName = excel?.originalname.toLowerCase() ?? "";
       if (!pdfName.endsWith(".pdf")) return res.status(400).json({ error: "The payment advice must be a PDF file." });
-      if (!(excelName.endsWith(".xls") || excelName.endsWith(".xlsx"))) return res.status(400).json({ error: "The detail export must be an XLS or XLSX file." });
-      const result = await reconcileFiles(pdf.buffer, excel.buffer, pdf.originalname, excel.originalname);
+      if (excel && !(excelName.endsWith(".xls") || excelName.endsWith(".xlsx"))) return res.status(400).json({ error: "The detail export must be an XLS or XLSX file." });
+      const summary = req.body?.excelSummary ? JSON.parse(req.body.excelSummary) as ExcelSummary : null;
+      if (!summary && !excel) return res.status(400).json({ error: "The Excel summary is missing. Please select the workbook again." });
+      const result = summary ? await reconcileParsedExcel(pdf.buffer, summary, pdf.originalname, "browser-normalized Excel export") : await reconcileFiles(pdf.buffer, excel.buffer, pdf.originalname, excel.originalname);
       res.json(result);
     } catch (error) {
       console.error("[Reconcile] failed", error);

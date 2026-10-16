@@ -233,10 +233,9 @@ function parseSheet(workbook: XLSX.WorkBook) {
   };
 }
 
-export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdfName: string, excelName: string): Promise<Reconciliation> {
-  const pdf = await parsePdf(pdfBuffer);
-  const workbook = XLSX.read(excelBuffer, { type: "buffer", cellDates: true });
-  const excel = parseSheet(workbook);
+export type ExcelSummary = Reconciliation["excel"];
+
+function buildReconciliation(pdf: Awaited<ReturnType<typeof parsePdf>>, excel: ExcelSummary, pdfName: string, excelName: string): Reconciliation {
   const subMatches = [["Dynamic Pricing", pdf.dynamicPricing], ["SRP", pdf.srp], ["Sponsored Listing", pdf.sponsored], ["Nova", pdf.nova]] as const;
   const usedSubscriptionIndexes = new Set<number>();
   const subscriptionValues = excel.subscriptionItems.map(item => item.amount);
@@ -263,4 +262,14 @@ export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdf
     { label: "Final settlement formula", pdfAmount: final, excelAmount: computedFinal, variance: round(computedFinal - final), explanation: "PDF invoice amount before adjustment plus the extracted adjustment-summary total.", status: close(computedFinal, final) ? "matched" : "review" },
   ];
   return { source: { pdfName, excelName, period: pdf.period, operator: pdf.operator, invoiceNo: pdf.invoiceNo }, pdf, excel: { ...excel, subscriptionItems }, checks, differences, bridge };
+}
+
+export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdfName: string, excelName: string): Promise<Reconciliation> {
+  const pdf = await parsePdf(pdfBuffer);
+  const workbook = XLSX.read(excelBuffer, { type: "buffer", cellDates: true });
+  return buildReconciliation(pdf, parseSheet(workbook), pdfName, excelName);
+}
+
+export async function reconcileParsedExcel(pdfBuffer: Buffer, excel: ExcelSummary, pdfName: string, excelName: string): Promise<Reconciliation> {
+  return buildReconciliation(await parsePdf(pdfBuffer), excel, pdfName, excelName);
 }
