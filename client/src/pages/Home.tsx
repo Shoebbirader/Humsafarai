@@ -5,7 +5,7 @@ import * as XLSX from "xlsx";
 
 type Result = any;
 type ExcelSummary = { bookingRows: number; rawBookingFare: number; rawBookingNet: number; bookingFare: number; bookingNet: number; activeBookingFare: number; activeBookingNet: number; embeddedCancellationFare: number; overlapCount: number; cancellationRows: number; cancellationFare: number; cancellationNet: number; subscriptionTotal: number; subscriptionItems: { label: string; amount: number; matched: string }[] };
-const excelNumber = (value: unknown) => { if (typeof value === "number") return Number.isFinite(value) ? value : 0; const n = Number(String(value ?? "").replace(/[₹,\s]/g, "")); return Number.isFinite(n) ? n : 0; };
+const excelNumber = (value: unknown) => { if (typeof value === "number") return Number.isFinite(value) ? value : 0; const cleaned = String(value ?? "").replace(/[₹,\s]/g, "").replace(/^\((.*)\)$/, "-$1"); const n = Number(cleaned); return Number.isFinite(n) ? n : 0; };
 const excelRound = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 async function normalizeExcelInBrowser(file: File): Promise<ExcelSummary> {
   const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
@@ -18,8 +18,8 @@ async function normalizeExcelInBrowser(file: File): Promise<ExcelSummary> {
   const fareCol = column("ticket fare"); const netCol = column("netpayable");
   const sections = headers.map(({ index }) => { const end = headers.find(item => item.index > index)?.index ?? rows.length; let label = ""; for (let i = index - 1; i >= 0; i -= 1) { const value = String(rows[i]?.[0] ?? "").trim(); if (value) { label = value; break; } } return { label, data: rows.slice(index + 1, end).filter(row => row[1] !== null && row[1] !== undefined && String(row[1]).trim() && String(row[1]) !== "PNR") }; });
   const main = sections.find(section => /payment/i.test(section.label)) || sections[0];
-  const cancellationRows = sections.filter(section => /(cancellation|bus cancelled|exceptional refund)/i.test(section.label)).flatMap(section => section.data);
-  const cancellationPnrs = new Set(cancellationRows.map(row => String(row[1]).trim())); const embedded = main.data.filter(row => cancellationPnrs.has(String(row[1]).trim()));
+  const cancellationRows = Array.from(new Map(sections.filter(section => /(cancellation|bus cancelled|exceptional refund)/i.test(section.label)).flatMap(section => section.data).map(row => [String(row[1]).trim(), row] as const)).values());
+  const cancellationPnrs = new Set(cancellationRows.map(row => String(row[1]).trim())); const embedded = Array.from(new Map(main.data.filter(row => cancellationPnrs.has(String(row[1]).trim())).map(row => [String(row[1]).trim(), row] as const)).values());
   const sum = (items: any[][], index: number) => excelRound(items.reduce((total, row) => total + excelNumber(row[index]), 0));
   const subscriptionSheet = workbook.SheetNames.map(name => workbook.Sheets[name]).find(candidate => { const values = XLSX.utils.sheet_to_json<any[]>(candidate, { header: 1, raw: true, defval: null }); return values.some(row => row.some((value: unknown) => String(value ?? "").toLowerCase().includes("total subscription value"))); });
   if (!subscriptionSheet) throw new Error("The workbook does not contain a Total Subscription Value column.");
