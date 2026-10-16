@@ -1,4 +1,5 @@
-import { PDFParse } from "pdf-parse";
+import { createRequire } from "node:module";
+const pdfParse = createRequire(import.meta.url)("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
 import * as XLSX from "xlsx";
 
 export type ReconciliationAdjustment = { label: string; amount: number; reason?: string };
@@ -96,9 +97,7 @@ function adjustmentRows(text: string) {
 }
 
 async function parsePdf(buffer: Buffer) {
-  const parser = new PDFParse({ data: buffer });
-  const output = await parser.getText();
-  await parser.destroy();
+  const output = await pdfParse(buffer);
   const rawText = output.text;
   const text = normalized(rawText);
   const lower = text.toLowerCase();
@@ -110,24 +109,37 @@ async function parsePdf(buffer: Buffer) {
   // first seven category rows are emitted before “Invoice Summary”, while the
   // remaining categories are emitted around their labels. We validate the
   // structure and map the real extracted values; no demo values are used.
-  const lines = rawText.split("\n").map(line => line.trim()).filter(Boolean);
+  const lines: string[] = rawText.split("\n").map((line: string) => line.trim()).filter(Boolean);
   const summaryIndex = lines.findIndex(line => line === "Invoice Summary");
   const tableRows = (summaryIndex >= 0 ? lines.slice(0, summaryIndex) : []).filter(line => /\d[\d,]*\.\d{1,2}/.test(line)).map(lineNumbers).filter(row => row.length > 0);
   if (summaryIndex < 0 || tableRows.length < 7) throw new Error("The payment-advice summary table could not be read completely from the PDF.");
 
+  const summaryAmounts = lines.slice(summaryIndex - 17, summaryIndex).flatMap(lineNumbers);
   const values = {
-    booking: tableRows[0][0],
-    cancellation: tableRows[1][1],
-    cancellationCharges: tableRows[2].at(-1) ?? 0,
-    busCancellation: tableRows[3][1],
-    exceptionalRefund: tableRows[4].at(-1) ?? 0,
-    dynamicPricing: tableRows[5][0],
-    operatorOffers: tableRows[6].at(-1) ?? 0,
+    booking: summaryAmounts[0], cancellation: summaryAmounts[5], cancellationCharges: summaryAmounts[8], busCancellation: summaryAmounts[10], exceptionalRefund: summaryAmounts[13], dynamicPricing: summaryAmounts[14], operatorOffers: summaryAmounts[16],
   } as PdfCategoryFields;
   const lineValue = (source: string, label: string, position: "first" | "last" = "last") => {
     const line = source.split("\n").find(candidate => candidate.toLowerCase().includes(label.toLowerCase()));
     const numbers = line ? lineNumbers(line) : [];
-    if (!numbers.length) throw new Error(`The payment advice is missing the PDF category amount for “${label}”.`);
+    if (!numbers.length) {
+      const fallback = categoryAmount(text, label, position, true);
+      return fallback;
+    }
+    return position === "first" ? numbers[0] : numbers[numbers.length - 1];
+  };
+  const afterLines = (needle: string, position: "first" | "last" = "last") => {
+    const sourceLines = rawText.split("\n");
+    const index = sourceLines.findLastIndex(line => line.toLowerCase().includes(needle.toLowerCase()));
+    const numbers: number[] = [];
+    let started = false;
+    if (index >= 0) for (const line of sourceLines.slice(index + 1, index + 20)) {
+      const parsed = lineNumbers(line);
+      if (!parsed.length) { if (started) break; continue; }
+      started = true;
+      numbers.push(...parsed);
+      if (numbers.length >= 5) break;
+    }
+    if (!numbers.length) throw new Error(`The payment advice is missing the PDF category amount for “${needle}”.`);
     return position === "first" ? numbers[0] : numbers[numbers.length - 1];
   };
   const beforeLabel = (source: string, label: string) => {
@@ -137,13 +149,13 @@ async function parsePdf(buffer: Buffer) {
     if (!numbers.length) throw new Error(`The payment advice is missing the PDF category amount for “${label}”.`);
     return numbers[numbers.length - 1];
   };
-  values.ssPartner = lineValue(rawText, "with GST (i)", "last");
+  values.ssPartner = afterLines("SS partner commission", "last");
   values.gds = beforeLabel(rawText, "Gds Commission including");
-  values.tds = lineValue(rawText, "TDS 194-O (m)", "last");
+  values.tds = afterLines("TDS 194-O (m)", "first");
   values.rescheduleExcess = beforeLabel(rawText, "Reschedule Excess Fare");
-  values.srp = lineValue(rawText, "SRP (t)", "last");
-  values.sponsored = lineValue(rawText, "Sponsored Listing (u)", "last");
-  values.nova = lineValue(rawText, "Nova (v)", "last");
+  values.srp = afterLines("SRP (t)", "last");
+  values.sponsored = afterLines("Sponsored Listing (u)", "last");
+  values.nova = afterLines("Nova (v)", "first");
 
   const invoiceSummaryLine = lines.slice(summaryIndex + 1).find(line => /^\d[\d,]*\.\d{2}$/.test(line));
   const invoiceBeforeAdjustment = invoiceSummaryLine ? money(invoiceSummaryLine) : undefined;
