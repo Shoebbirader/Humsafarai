@@ -1,24 +1,28 @@
 import { PDFParse } from "pdf-parse";
 import * as XLSX from "xlsx";
 
+export type ReconciliationAdjustment = { label: string; amount: number; reason?: string };
+
 export type Reconciliation = {
   source: { pdfName: string; excelName: string; period: string; operator: string; invoiceNo: string };
-  pdf: { booking: number; cancellation: number; cancellationCharges: number; busCancellation: number; exceptionalRefund: number; dynamicPricing: number; operatorOffers: number; ssPartner: number; gds: number; tds: number; rescheduleExcess: number; srp: number; sponsored: number; nova: number; invoiceBeforeAdjustment: number; adjustment: number; finalSettlement: number };
+  pdf: { booking: number; cancellation: number; cancellationCharges: number; busCancellation: number; exceptionalRefund: number; dynamicPricing: number; operatorOffers: number; ssPartner: number; gds: number; tds: number; rescheduleExcess: number; srp: number; sponsored: number; nova: number; invoiceBeforeAdjustment: number; adjustment: number; adjustments: ReconciliationAdjustment[]; finalSettlement: number };
   excel: { bookingRows: number; rawBookingFare: number; rawBookingNet: number; bookingFare: number; bookingNet: number; activeBookingFare: number; activeBookingNet: number; embeddedCancellationFare: number; overlapCount: number; cancellationRows: number; cancellationFare: number; cancellationNet: number; subscriptionTotal: number; subscriptionItems: { label: string; amount: number; matched: string }[] };
   checks: { label: string; status: "matched" | "review" | "info"; detail: string; variance?: number }[];
   differences: { label: string; pdfAmount: number; excelAmount: number; variance: number; explanation: string; status: "matched" | "review" }[];
   bridge: { label: string; amount: number; kind: "base" | "deduction" | "addition" | "final" }[];
 };
 
-const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
+const round = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const close = (a: number, b: number, tolerance = 0.05) => Math.abs(a - b) <= tolerance;
 const money = (value: unknown) => {
   const cleaned = String(value ?? "").replace(/[₹,\s]/g, "").replace(/\(([^)]+)\)/, "-$1");
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : 0;
 };
-const round = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
-const close = (a: number, b: number) => Math.abs(a - b) < 0.02;
+const valueMoney = (value: unknown) => typeof value === "number" ? (Number.isFinite(value) ? value : 0) : money(value);
 const lineNumbers = (line: string) => [...line.matchAll(/-?\d[\d,]*(?:\.\d{1,2})?/g)].map(match => money(match[0]));
+const decimalNumbers = (text: string) => [...text.matchAll(/-?\d[\d,]*\.\d{1,2}/g)].map(match => money(match[0]));
+
 function consumeMatch(target: number, values: number[], used: Set<number>) {
   for (let index = 0; index < values.length; index += 1) {
     if (!used.has(index) && close(values[index], target)) { used.add(index); return true; }
@@ -40,93 +44,193 @@ function consumeMatch(target: number, values: number[], used: Set<number>) {
   indexes.forEach(index => used.add(index));
   return true;
 }
-const lineValue = (text: string, label: string, position: "first" | "last" = "last", fallback = 0) => {
-  const line = text.split("\n").find(candidate => candidate.toLowerCase().includes(label.toLowerCase()));
-  const values = line ? lineNumbers(line) : [];
-  return values.length ? (position === "first" ? values[0] : values[values.length - 1]) : fallback;
-};
-const beforeLabel = (text: string, label: string, fallback = 0) => {
-  const index = text.toLowerCase().indexOf(label.toLowerCase());
-  if (index < 0) return fallback;
-  const values = lineNumbers(text.slice(Math.max(0, index - 80), index));
-  return values.length ? values[values.length - 1] : fallback;
-};
 
-function lastMoney(text: string, from: number, window = 220) {
-  const values = lineNumbers(text.slice(from, from + window));
-  return values.length ? values[values.length - 1] : 0;
+const PDF_CATEGORIES = [
+  ["Booking (a)", "booking", "first"],
+  ["Cancellation (b)", "cancellation", "first"],
+  ["Cancellation Charges (c)", "cancellationCharges", "last"],
+  ["Bus Cancellation (d)", "busCancellation", "first"],
+  ["Exceptional Refund (e)", "exceptionalRefund", "last"],
+  ["Dynamic Pricing (f)", "dynamicPricing", "last"],
+  ["Operator Offers (h)", "operatorOffers", "last"],
+  ["SS partner commission with GST (i)", "ssPartner", "last"],
+  ["Gds Commission including GST(k)", "gds", "last"],
+  ["TDS 194-O (m)", "tds", "last"],
+  ["Reschedule Excess Fare (o)", "rescheduleExcess", "last"],
+  ["SRP (t)", "srp", "last"],
+  ["Sponsored Listing (u)", "sponsored", "last"],
+  ["Nova (v)", "nova", "last"],
+] as const;
+type PdfCategoryFields = Pick<Reconciliation["pdf"], "booking" | "cancellation" | "cancellationCharges" | "busCancellation" | "exceptionalRefund" | "dynamicPricing" | "operatorOffers" | "ssPartner" | "gds" | "tds" | "rescheduleExcess" | "srp" | "sponsored" | "nova">;
+
+function normalized(text: string) { return text.replace(/\s+/g, " ").trim(); }
+function segmentBetween(text: string, label: string, labels: string[]) {
+  const lower = text.toLowerCase();
+  const start = lower.indexOf(label.toLowerCase());
+  if (start < 0) return "";
+  const end = labels
+    .map(candidate => lower.indexOf(candidate.toLowerCase(), start + label.length))
+    .filter(index => index >= 0)
+    .sort((a, b) => a - b)[0] ?? text.length;
+  return text.slice(start, end);
 }
-function findAmount(text: string, labels: string[], fallback = 0) {
-  for (const label of labels) {
-    const index = text.toLowerCase().indexOf(label.toLowerCase());
-    if (index >= 0) {
-      const value = lastMoney(text, index + label.length);
-      if (value !== 0 || /0(?:\.0+)?/.test(text.slice(index, index + 220))) return value;
-    }
+function categoryAmount(text: string, label: string, mode: "first" | "last", required = false) {
+  const segment = segmentBetween(text, label, PDF_CATEGORIES.map(([candidate]) => candidate));
+  const values = lineNumbers(segment);
+  if (!values.length) {
+    if (required) throw new Error(`The payment advice is missing the PDF category amount for “${label}”.`);
+    return 0;
   }
-  return fallback;
+  return mode === "first" ? values[0] : values[values.length - 1];
+}
+function adjustmentRows(text: string) {
+  const labels = ["SS Adjustments", "Recon Adjustments", "Advance Payment Deductions", "YourBus Adjustments", "Negative Amount", "BO Migration Adjustments", "Working Capital Adjustment", "NBFC Adjustment"];
+  const rows: ReconciliationAdjustment[] = [];
+  for (const label of labels) {
+    const segment = segmentBetween(text, label, labels);
+    const match = segment.match(/1\)\.\s*(-?\d[\d,]*\.\d{1,2})/);
+    const value = match ? money(match[1]) : undefined;
+    if (value !== undefined && value !== 0) rows.push({ label, amount: round(value) });
+  }
+  return rows;
 }
 
 async function parsePdf(buffer: Buffer) {
   const parser = new PDFParse({ data: buffer });
   const output = await parser.getText();
   await parser.destroy();
-  const text = output.text;
-  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+  const rawText = output.text;
+  const text = normalized(rawText);
+  const lower = text.toLowerCase();
+  const requiredMarkers = ["Payment Advice", "Invoice Summary", "Invoice Amount(Z)", "Adjustment Summary", "Total(X)", "Invoice Amount After Adjustment", "Booking (a)", "Cancellation (b)"];
+  const missing = requiredMarkers.filter(marker => !lower.includes(marker.toLowerCase()));
+  if (missing.length) throw new Error(`This PDF is not a supported payment-advice statement. Missing: ${missing.join(", ")}.`);
+
+  // pdf-parse preserves the payment-advice table as two visual streams: the
+  // first seven category rows are emitted before “Invoice Summary”, while the
+  // remaining categories are emitted around their labels. We validate the
+  // structure and map the real extracted values; no demo values are used.
+  const lines = rawText.split("\n").map(line => line.trim()).filter(Boolean);
   const summaryIndex = lines.findIndex(line => line === "Invoice Summary");
-  const summaryLines = summaryIndex >= 0 ? lines.slice(0, summaryIndex) : lines;
-  const tableRows = summaryLines.filter(line => /\d[\d,]*\.\d{1,2}/.test(line)).map(lineNumbers).filter(row => row.length > 0);
-  const finalMatch = text.match(/(-?\d[\d,]*\.\d{2})\s*\nInvoice Amount After Adjustment/);
-  const adjustmentMatch = text.match(/(-?\d[\d,]*\.\d{2})\s*\nTotal\(X\)=/);
-  const invoiceBeforeMatch = text.match(/Invoice Summary\s*\n([\d,]+\.\d{2})/);
-  if (!text.includes("Payment Advice") || !invoiceBeforeMatch || !finalMatch || tableRows.length < 7) {
-    throw new Error("This PDF does not look like a supported payment-advice statement. Check that you uploaded the settlement advice, not a ticket or invoice.");
-  }
-  const booking = tableRows[0]?.[0] ?? findAmount(text, ["Booking (a)"], 12155664);
-  const cancellation = tableRows[1]?.[1] ?? findAmount(text, ["Cancellation (b)"], 331272);
-  const cancellationCharges = tableRows[2]?.[0] ?? findAmount(text, ["Cancellation Charges (c)"], 104483.99);
-  const busCancellation = tableRows[3]?.[1] ?? findAmount(text, ["Bus Cancellation (d)"], 72370);
-  const exceptionalRefund = tableRows[4]?.[0] ?? findAmount(text, ["Exceptional Refund (e)"], 8524.02);
-  const dynamicPricing = tableRows[5]?.[0] ?? findAmount(text, ["Dynamic Pricing (f)"], 148538);
-  const operatorOffers = tableRows[6]?.[0] ?? findAmount(text, ["Operator Offers (h)"], 712248.62);
-  const ssPartner = lineValue(text, "SS partner commission with GST (i)", "last", 43833.11);
-  const gds = beforeLabel(text, "Gds Commission including", 62.5);
-  const tds = lineValue(text, "TDS 194-O (m)", "last", 10850.49);
-  const rescheduleExcess = beforeLabel(text, "Reschedule Excess Fare", 7145);
-  const srp = lineValue(text, "SRP (t)", "last", 84428.41);
-  const sponsored = lineValue(text, "Sponsored Listing (u)", "last", 22184.52);
-  const nova = lineValue(text, "Nova (v)", "last", 23010);
-  const invoiceBeforeAdjustment = invoiceBeforeMatch ? money(invoiceBeforeMatch[1]) : 9709049.62;
-  const adjustment = adjustmentMatch ? money(adjustmentMatch[1]) : -2266.65;
-  const operatorMatch = text.match(/\n(Humsafar Travels)\n/);
-  const invoiceMatch = text.match(/(\d{9}-\d{6})/);
-  const periodMatch = text.match(/From:\s*To:\s*([\d-]+)\s*([\d-]+)/);
-  return { booking, cancellation, cancellationCharges, busCancellation, exceptionalRefund, dynamicPricing, operatorOffers, ssPartner, gds, tds, rescheduleExcess, srp, sponsored, nova, invoiceBeforeAdjustment, adjustment, finalSettlement: finalMatch ? money(finalMatch[1]) : 9706782.97, operator: operatorMatch?.[1] ?? "Payment advice operator", invoiceNo: invoiceMatch?.[1] ?? "", period: periodMatch ? `${periodMatch[1]} to ${periodMatch[2]}`.replace(/\s+/g, " ") : "21-09-26 to 27-09-26" };
+  const tableRows = (summaryIndex >= 0 ? lines.slice(0, summaryIndex) : []).filter(line => /\d[\d,]*\.\d{1,2}/.test(line)).map(lineNumbers).filter(row => row.length > 0);
+  if (summaryIndex < 0 || tableRows.length < 7) throw new Error("The payment-advice summary table could not be read completely from the PDF.");
+
+  const values = {
+    booking: tableRows[0][0],
+    cancellation: tableRows[1][1],
+    cancellationCharges: tableRows[2].at(-1) ?? 0,
+    busCancellation: tableRows[3][1],
+    exceptionalRefund: tableRows[4].at(-1) ?? 0,
+    dynamicPricing: tableRows[5][0],
+    operatorOffers: tableRows[6].at(-1) ?? 0,
+  } as PdfCategoryFields;
+  const lineValue = (source: string, label: string, position: "first" | "last" = "last") => {
+    const line = source.split("\n").find(candidate => candidate.toLowerCase().includes(label.toLowerCase()));
+    const numbers = line ? lineNumbers(line) : [];
+    if (!numbers.length) throw new Error(`The payment advice is missing the PDF category amount for “${label}”.`);
+    return position === "first" ? numbers[0] : numbers[numbers.length - 1];
+  };
+  const beforeLabel = (source: string, label: string) => {
+    const index = source.toLowerCase().indexOf(label.toLowerCase());
+    if (index < 0) throw new Error(`The payment advice is missing the PDF category label “${label}”.`);
+    const numbers = lineNumbers(source.slice(Math.max(0, index - 100), index));
+    if (!numbers.length) throw new Error(`The payment advice is missing the PDF category amount for “${label}”.`);
+    return numbers[numbers.length - 1];
+  };
+  values.ssPartner = lineValue(rawText, "with GST (i)", "last");
+  values.gds = beforeLabel(rawText, "Gds Commission including");
+  values.tds = lineValue(rawText, "TDS 194-O (m)", "last");
+  values.rescheduleExcess = beforeLabel(rawText, "Reschedule Excess Fare");
+  values.srp = lineValue(rawText, "SRP (t)", "last");
+  values.sponsored = lineValue(rawText, "Sponsored Listing (u)", "last");
+  values.nova = lineValue(rawText, "Nova (v)", "last");
+
+  const invoiceSummaryLine = lines.slice(summaryIndex + 1).find(line => /^\d[\d,]*\.\d{2}$/.test(line));
+  const invoiceBeforeAdjustment = invoiceSummaryLine ? money(invoiceSummaryLine) : undefined;
+  const totalLineIndex = lines.findIndex(line => line.toLowerCase().includes("total(x)"));
+  const adjustment = decimalNumbers(lines.slice(Math.max(0, totalLineIndex - 3), totalLineIndex + 1).join(" ")).at(-1);
+  const finalLineIndex = lines.findIndex(line => line.toLowerCase().includes("invoice amount after adjustment"));
+  const finalSettlement = decimalNumbers(lines.slice(Math.max(0, finalLineIndex - 3), finalLineIndex + 1).join(" ")).at(-1);
+  if (invoiceBeforeAdjustment === undefined || adjustment === undefined || finalSettlement === undefined) throw new Error("The payment advice is missing a complete invoice-before-adjustment, adjustment, or final-settlement amount.");
+  const operatorMatch = text.match(/(?:^|\s)([A-Za-z][A-Za-z .&'-]+?)\s+GSTIN\s*:/i);
+  const invoiceMatch = text.match(/\b(\d{9}-\d{6})\b/);
+  const periodMatch = text.match(/From:\s*(?:To:\s*)?(\d{2}-\d{2}-\d{2})\s+(?:To:\s*)?(\d{2}-\d{2}-\d{2})/i);
+  const adjustments = adjustmentRows(text);
+  const extractedAdjustmentTotal = round(adjustments.reduce((sum, row) => sum + row.amount, 0));
+  if (!close(extractedAdjustmentTotal, adjustment)) throw new Error(`Adjustment detail does not tie to Total(X): extracted ${extractedAdjustmentTotal.toFixed(2)} versus PDF ${adjustment.toFixed(2)}.`);
+  return { ...values, invoiceBeforeAdjustment: round(invoiceBeforeAdjustment), adjustment: round(adjustment), adjustments, finalSettlement: round(finalSettlement), operator: operatorMatch?.[1]?.trim() || "Payment advice operator", invoiceNo: invoiceMatch?.[1] || "", period: periodMatch ? `${periodMatch[1]} to ${periodMatch[2]}` : "Payment advice period" };
 }
 
+function findHeader(rows: unknown[][], required: string[]) {
+  return rows.findIndex(row => required.every(name => row.some(value => String(value ?? "").toLowerCase().replace(/\s+/g, " ").includes(name.toLowerCase()))));
+}
+function sectionLabel(rows: unknown[][], headerIndex: number) {
+  for (let index = headerIndex - 1; index >= 0; index -= 1) {
+    const first = String(rows[index]?.[0] ?? "").trim();
+    if (first) return first;
+  }
+  return "";
+}
 function parseSheet(workbook: XLSX.WorkBook) {
   const sheet = workbook.Sheets["BoInvoice"] ?? workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) throw new Error("The workbook does not contain a transaction sheet.");
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null });
-  const headerIndex = rows.findIndex(row => String(row[0] ?? "").includes("TIN") && String(row[1] ?? "").includes("PNR"));
-  if (headerIndex < 0) throw new Error("This spreadsheet does not contain the expected TIN / PNR transaction header.");
-  const header = (rows[headerIndex] ?? []) as unknown[];
-  const col = (name: string, fallback: number) => { const index = header.findIndex(h => String(h ?? "").toLowerCase().includes(name.toLowerCase())); return index >= 0 ? index : fallback; };
-  const fareCol = col("ticket fare", 7), netCol = col("netpay", 18), typeCol = col("type of", -1);
-  const sectionStart = rows.findIndex(row => String(row[0] ?? "").toLowerCase().includes("cancellation") && String(row[0] ?? "").toLowerCase().includes("27aa"));
-  const bookingRows = rows.slice(headerIndex + 1, sectionStart > headerIndex ? sectionStart : rows.length).filter(row => row[1] !== null && String(row[1]).trim() && String(row[1]) !== "PNR");
-  const cancellationHeader = sectionStart >= 0 ? rows.findIndex((row, index) => index > sectionStart && String(row[0] ?? "").includes("TIN") && String(row[1] ?? "").includes("PNR")) : -1;
-  const cancellationRows = cancellationHeader >= 0 ? rows.slice(cancellationHeader + 1).filter(row => row[1] !== null && String(row[1]).trim() && String(row[1]) !== "PNR") : [];
-  const cancellationPnrs = new Set(cancellationRows.map(row => String(row[1])));
-  const embedded = typeCol >= 0 ? bookingRows.filter(row => String(row[typeCol] ?? "").toLowerCase().includes("cancellation")) : bookingRows.filter(row => cancellationPnrs.has(String(row[1])));
-  const sum = (list: unknown[][], index: number) => round(list.reduce((total, row) => total + num(row[index]), 0));
-  const subscriptionSheet = workbook.Sheets["YourBus Subscription Detail"];
-  const subscriptionRows = subscriptionSheet ? XLSX.utils.sheet_to_json<unknown[]>(subscriptionSheet, { header: 1, raw: true, defval: null }) : [];
-  const subscriptionItems = subscriptionRows.map(row => num(row[8])).filter(value => value > 0).map(amount => ({ label: "Subscription/detail line", amount, matched: "" }));
-  const rawBookingFare = sum(bookingRows, fareCol);
-  const rawBookingNet = sum(bookingRows, netCol);
+  const headers = rows.map((_, index) => index).filter(index => String(rows[index]?.[0] ?? "").trim().toLowerCase() === "tin" && String(rows[index]?.[1] ?? "").trim().toLowerCase() === "pnr");
+  if (!headers.length) throw new Error("This spreadsheet does not contain the expected TIN / PNR transaction header.");
+  const headerIndex = headers[0];
+  const header = rows[headerIndex] ?? [];
+  const column = (name: string) => {
+    const index = header.findIndex(value => String(value ?? "").toLowerCase().replace(/\s+/g, " ").includes(name.toLowerCase()));
+    if (index < 0) throw new Error(`The workbook is missing the required “${name}” column.`);
+    return index;
+  };
+  const fareCol = column("ticket fare");
+  const netCol = column("netpayable");
+  const sections = headers.map((start, position) => {
+    const end = headers[position + 1] ?? rows.length;
+    const data = rows.slice(start + 1, end).filter(row => row[1] !== null && row[1] !== undefined && String(row[1]).trim() && String(row[1]) !== "PNR");
+    return { label: sectionLabel(rows, start), data };
+  });
+  const main = sections.find(section => /payment/i.test(section.label)) ?? sections[0];
+  const cancellationSections = sections.filter(section => /(cancellation|bus cancelled|exceptional refund)/i.test(section.label));
+  const cancellationRows = cancellationSections.flatMap(section => section.data);
+  const cancellationPnrs = new Set(cancellationRows.map(row => String(row[1]).trim()));
+  const embedded = main.data.filter(row => cancellationPnrs.has(String(row[1]).trim()));
+  const sum = (list: unknown[][], index: number) => round(list.reduce((total, row) => total + valueMoney(row[index]), 0));
+
+  const subscriptionSheet = workbook.SheetNames.map(name => workbook.Sheets[name]).find(candidate => {
+    const subscriptionRows = XLSX.utils.sheet_to_json<unknown[]>(candidate, { header: 1, raw: true, defval: null });
+    return subscriptionRows.some(row => row.some(value => String(value ?? "").toLowerCase().includes("total subscription value")));
+  });
+  if (!subscriptionSheet) throw new Error("The workbook does not contain a Total Subscription Value column.");
+  const subscriptionRows = XLSX.utils.sheet_to_json<unknown[]>(subscriptionSheet, { header: 1, raw: true, defval: null });
+  const subscriptionHeaderIndex = subscriptionRows.findIndex(row => row.some(value => String(value ?? "").toLowerCase().includes("total subscription value")));
+  const subscriptionHeader = subscriptionRows[subscriptionHeaderIndex] ?? [];
+  const subscriptionCol = subscriptionHeader.findIndex(value => String(value ?? "").toLowerCase().includes("total subscription value"));
+  const subscriptionItems = subscriptionRows.slice(subscriptionHeaderIndex + 1).flatMap((row, offset) => {
+    const amount = valueMoney(row[subscriptionCol]);
+    return amount > 0 ? [{ label: `Excel subscription row ${subscriptionHeaderIndex + offset + 2}`, amount: round(amount), matched: "" }] : [];
+  });
+  const rawBookingFare = sum(main.data, fareCol);
+  const rawBookingNet = sum(main.data, netCol);
   const embeddedCancellationFare = sum(embedded, fareCol);
   const embeddedCancellationNet = sum(embedded, netCol);
-  return { bookingRows: bookingRows.length, rawBookingFare, rawBookingNet, bookingFare: round(rawBookingFare - embeddedCancellationFare), bookingNet: round(rawBookingNet - embeddedCancellationNet), activeBookingFare: round(rawBookingFare - embeddedCancellationFare), activeBookingNet: round(rawBookingNet - embeddedCancellationNet), embeddedCancellationFare, overlapCount: embedded.length, cancellationRows: cancellationRows.length, cancellationFare: sum(cancellationRows, fareCol), cancellationNet: sum(cancellationRows, netCol), subscriptionTotal: round(subscriptionItems.reduce((total, item) => total + item.amount, 0)), subscriptionItems };
+  return {
+    bookingRows: main.data.length,
+    rawBookingFare,
+    rawBookingNet,
+    bookingFare: round(rawBookingFare - embeddedCancellationFare),
+    bookingNet: round(rawBookingNet - embeddedCancellationNet),
+    activeBookingFare: round(rawBookingFare - embeddedCancellationFare),
+    activeBookingNet: round(rawBookingNet - embeddedCancellationNet),
+    embeddedCancellationFare,
+    overlapCount: embedded.length,
+    cancellationRows: cancellationRows.length,
+    cancellationFare: sum(cancellationRows, fareCol),
+    cancellationNet: sum(cancellationRows, netCol),
+    subscriptionTotal: round(subscriptionItems.reduce((total, item) => total + item.amount, 0)),
+    subscriptionItems,
+  };
 }
 
 export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdfName: string, excelName: string): Promise<Reconciliation> {
@@ -141,22 +245,22 @@ export async function reconcileFiles(pdfBuffer: Buffer, excelBuffer: Buffer, pdf
   const final = pdf.finalSettlement;
   const computedFinal = round(pdf.invoiceBeforeAdjustment + pdf.adjustment);
   const checks: Reconciliation["checks"] = [
-    { label: "PDF final settlement math", status: close(computedFinal, final) ? "matched" : "review", detail: `Invoice before adjustment ${pdf.invoiceBeforeAdjustment.toLocaleString("en-IN")} + net adjustment ${pdf.adjustment.toLocaleString("en-IN")} = ${computedFinal.toLocaleString("en-IN")}`, variance: round(final - computedFinal) },
+    { label: "PDF final settlement math", status: close(computedFinal, final) ? "matched" : "review", detail: `Invoice before adjustment ${pdf.invoiceBeforeAdjustment.toLocaleString("en-IN")} + total adjustment ${pdf.adjustment.toLocaleString("en-IN")} = ${computedFinal.toLocaleString("en-IN")}`, variance: round(final - computedFinal) },
+    { label: "PDF adjustment detail", status: close(pdf.adjustments.reduce((sum, row) => sum + row.amount, 0), pdf.adjustment) ? "matched" : "review", detail: `${pdf.adjustments.length} non-zero adjustment lines extracted from Adjustment Summary; total ${pdf.adjustment.toLocaleString("en-IN")}.`, variance: round(pdf.adjustments.reduce((sum, row) => sum + row.amount, 0) - pdf.adjustment) },
     { label: "Excel subscription detail", status: close(excel.subscriptionTotal, subscriptionMatched) ? "matched" : "review", detail: `Four payment-advice deductions total ${subscriptionMatched.toLocaleString("en-IN")}; workbook detail totals ${excel.subscriptionTotal.toLocaleString("en-IN")}`, variance: round(excel.subscriptionTotal - subscriptionMatched) },
     { label: "Cancellation double-count protection", status: excel.embeddedCancellationFare > 0 ? "info" : "matched", detail: `${excel.embeddedCancellationFare.toLocaleString("en-IN")} of booking-sheet fare overlaps a cancellation PNR and is excluded from active-booking comparison.` },
     { label: "Raw Excel vs payment advice", status: "review", detail: `Raw booking net is ${excel.rawBookingNet.toLocaleString("en-IN")}; payment advice applies offers, commissions, tax deductions, service lines, and adjustments before settlement.` },
   ];
   const bridge: Reconciliation["bridge"] = [
     { label: "Invoice amount before adjustment", amount: pdf.invoiceBeforeAdjustment, kind: "base" },
-    { label: "SS adjustment", amount: -3301.65, kind: "deduction" },
-    { label: "Recon adjustment", amount: 1035, kind: "addition" },
+    ...(pdf.adjustments.length ? pdf.adjustments.map(item => ({ label: item.label, amount: item.amount, kind: item.amount < 0 ? "deduction" as const : "addition" as const })) : [{ label: "Total adjustment", amount: pdf.adjustment, kind: pdf.adjustment < 0 ? "deduction" as const : "addition" as const }]),
     { label: "Final settlement", amount: final, kind: "final" },
   ];
   const differences: Reconciliation["differences"] = [
     { label: "Booking ticket fare", pdfAmount: pdf.booking, excelAmount: excel.activeBookingFare, variance: round(excel.activeBookingFare - pdf.booking), explanation: `${excel.overlapCount} PNRs appear in both workbook sections; Excel active fare removes ${excel.embeddedCancellationFare.toLocaleString("en-IN")} as overlap.`, status: close(excel.activeBookingFare, pdf.booking) ? "matched" : "review" },
-    { label: "Cancellation classification", pdfAmount: pdf.cancellation, excelAmount: round(excel.cancellationFare + excel.embeddedCancellationFare), variance: round(excel.cancellationFare + excel.embeddedCancellationFare - pdf.cancellation), explanation: "Excel contains a separate cancellation section plus cancellation PNRs embedded in bookings; these populations are not the same as the PDF category total.", status: close(excel.cancellationFare + excel.embeddedCancellationFare, pdf.cancellation) ? "matched" : "review" },
-    { label: "Subscription/detail deductions", pdfAmount: subscriptionMatched, excelAmount: excel.subscriptionTotal, variance: round(excel.subscriptionTotal - subscriptionMatched), explanation: "Dynamic Pricing, SRP, Sponsored Listing and Nova are matched to individual or grouped Excel detail lines.", status: close(excel.subscriptionTotal, subscriptionMatched) ? "matched" : "review" },
-    { label: "Final settlement formula", pdfAmount: final, excelAmount: computedFinal, variance: round(computedFinal - final), explanation: "PDF invoice amount before adjustment plus SS and reconciliation adjustments.", status: close(computedFinal, final) ? "matched" : "review" },
+    { label: "Cancellation classification", pdfAmount: pdf.cancellation, excelAmount: round(excel.cancellationFare + excel.embeddedCancellationFare), variance: round(excel.cancellationFare + excel.embeddedCancellationFare - pdf.cancellation), explanation: `${excel.cancellationRows} rows from cancellation, bus-cancelled, and exceptional-refund sections are compared with the PDF cancellation category.`, status: close(excel.cancellationFare + excel.embeddedCancellationFare, pdf.cancellation) ? "matched" : "review" },
+    { label: "Subscription/detail deductions", pdfAmount: subscriptionMatched, excelAmount: excel.subscriptionTotal, variance: round(excel.subscriptionTotal - subscriptionMatched), explanation: "Dynamic Pricing, SRP, Sponsored Listing and Nova are matched to individual or grouped Excel detail lines using source row references.", status: close(excel.subscriptionTotal, subscriptionMatched) ? "matched" : "review" },
+    { label: "Final settlement formula", pdfAmount: final, excelAmount: computedFinal, variance: round(computedFinal - final), explanation: "PDF invoice amount before adjustment plus the extracted adjustment-summary total.", status: close(computedFinal, final) ? "matched" : "review" },
   ];
   return { source: { pdfName, excelName, period: pdf.period, operator: pdf.operator, invoiceNo: pdf.invoiceNo }, pdf, excel: { ...excel, subscriptionItems }, checks, differences, bridge };
 }

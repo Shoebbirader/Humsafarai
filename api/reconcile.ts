@@ -10,7 +10,12 @@ export const config = {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024, files: 2, parts: 4 },
+  fileFilter: (_req, file, callback) => {
+    const name = file.originalname.toLowerCase();
+    const valid = file.fieldname === "pdf" ? name.endsWith(".pdf") : file.fieldname === "excel" && (name.endsWith(".xls") || name.endsWith(".xlsx"));
+    callback(valid ? null : new Error(file.fieldname === "pdf" ? "The payment advice must be a PDF file." : "The detail export must be an XLS or XLSX file."), valid);
+  },
 }).fields([
   { name: "pdf", maxCount: 1 },
   { name: "excel", maxCount: 1 },

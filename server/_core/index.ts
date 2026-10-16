@@ -19,7 +19,15 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024, files: 2, parts: 4 },
+    fileFilter: (_req, file, callback) => {
+      const name = file.originalname.toLowerCase();
+      const valid = file.fieldname === "pdf" ? name.endsWith(".pdf") : file.fieldname === "excel" && (name.endsWith(".xls") || name.endsWith(".xlsx"));
+      (callback as any)(valid ? null : new Error(file.fieldname === "pdf" ? "The payment advice must be a PDF file." : "The detail export must be an XLS or XLSX file."), valid);
+    },
+  });
   app.post("/api/reconcile", upload.fields([{ name: "pdf", maxCount: 1 }, { name: "excel", maxCount: 1 }]), async (req, res) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] };
