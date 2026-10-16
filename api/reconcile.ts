@@ -14,7 +14,7 @@ const upload = multer({
   fileFilter: (_req, file, callback) => {
     const name = file.originalname.toLowerCase();
     const valid = file.fieldname === "pdf" ? name.endsWith(".pdf") : file.fieldname === "excel" && (name.endsWith(".xls") || name.endsWith(".xlsx"));
-    callback(valid ? null : new Error(file.fieldname === "pdf" ? "The payment advice must be a PDF file." : "The detail export must be an XLS or XLSX file."), valid);
+    (callback as any)(valid ? null : new Error(file.fieldname === "pdf" ? "The payment advice must be a PDF file." : "The detail export must be an XLS or XLSX file."), valid);
   },
 }).fields([
   { name: "pdf", maxCount: 1 },
@@ -24,7 +24,7 @@ const upload = multer({
 export default function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed." });
 
-  upload(req, res, async (error: unknown) => {
+  (upload as any)(req, res, async (error: unknown) => {
     if (error) return res.status(400).json({ error: error instanceof Error ? error.message : "Unable to read uploaded files." });
     try {
       const files = req.files as Record<string, Array<{ buffer: Buffer; originalname: string }>>;
