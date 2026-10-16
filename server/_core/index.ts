@@ -28,7 +28,15 @@ async function startServer() {
       (callback as any)(valid ? null : new Error(file.fieldname === "pdf" ? "The payment advice must be a PDF file." : "The detail export must be an XLS or XLSX file."), valid);
     },
   });
-  app.post("/api/reconcile", upload.fields([{ name: "pdf", maxCount: 1 }, { name: "excel", maxCount: 1 }]), async (req, res) => {
+  app.post("/api/reconcile", (req, res, next) => {
+    upload.fields([{ name: "pdf", maxCount: 1 }, { name: "excel", maxCount: 1 }])(req, res, error => {
+      if (error) {
+        console.error("[Reconcile] upload failed", error);
+        return res.status(400).json({ error: error instanceof Error ? error.message : "Unable to read uploaded files." });
+      }
+      next();
+    });
+  }, async (req, res) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] };
       const pdf = files?.pdf?.[0];

@@ -1,6 +1,8 @@
-import { createRequire } from "node:module";
-const pdfParse = createRequire(import.meta.url)("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
+// Import the parser implementation directly so pdf-parse's CLI entrypoint does not run its missing test fixture during server startup.
+import pdfParseModule from "pdf-parse/lib/pdf-parse.js";
 import * as XLSX from "xlsx";
+
+const pdfParse = pdfParseModule as unknown as (buffer: Buffer) => Promise<{ text: string }>;
 
 export type ReconciliationAdjustment = { label: string; amount: number; reason?: string };
 
