@@ -1,6 +1,7 @@
-import { createRequire } from "node:module";
-const pdfParse = createRequire(import.meta.url)("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
+import pdfParseModule from "pdf-parse";
 import * as XLSX from "xlsx";
+
+const pdfParse = pdfParseModule as unknown as (buffer: Buffer) => Promise<{ text: string }>;
 
 export type ReconciliationAdjustment = { label: string; amount: number; reason?: string };
 
