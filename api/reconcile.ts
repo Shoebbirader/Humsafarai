@@ -1,5 +1,5 @@
 import multer from "multer";
-import { reconcileFiles, reconcileParsedExcel, type ExcelSummary } from "../server/reconcile";
+import { reconcileFiles, reconcileParsedExcel, type ExcelSummary } from "../server/reconcile.js";
 
 export const config = {
   api: {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import PDFDocument from "pdfkit";
-import type { Reconciliation } from "../../server/reconcile";
+import type { Reconciliation } from "../../server/reconcile.js";
 
 const fontDir = path.resolve(process.cwd(), "server/assets");
 const logoPath = path.resolve(process.cwd(), "client/public/humsafarai-logo.png");
