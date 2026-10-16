@@ -49,7 +49,22 @@ function renderReport(doc: PDFKit.PDFDocument, result: Reconciliation) {
 
   section("03", "Where differences occur");
   label("Comparison", 58, doc.y, 170); label("PDF", 235, doc.y, 100); label("Excel", 340, doc.y, 100); label("Variance", 445, doc.y, 105); doc.moveDown(0.5); rule(); doc.moveDown(0.45);
-  (result.differences ?? []).forEach(item => { if (doc.y > 720) doc.addPage(); const color = item.status === "matched" ? teal : red; const y = doc.y; doc.fillColor(color).font(bold).fontSize(9.2).text(item.label, 58, y, { width: 170 }); doc.fillColor(ink).font(regular).fontSize(7.6).text(inr(item.pdfAmount), 235, y, { width: 100, align: "right" }); doc.text(inr(item.excelAmount), 340, y, { width: 100, align: "right" }); doc.fillColor(color).font(bold).fontSize(7.6).text(moneyWithSign(item.variance), 445, y, { width: 105, align: "right" }); doc.fillColor(muted).font(regular).fontSize(8).text(item.explanation, 58, y + 17, { width: 465 }); doc.moveDown(0.95); rule(); doc.moveDown(0.38); });
+  (result.differences ?? []).forEach(item => {
+    const color = item.status === "matched" ? teal : red;
+    const explanationLines = Math.max(1, Math.ceil(item.explanation.length / 92));
+    const rowHeight = 48 + explanationLines * 9;
+    if (doc.y + rowHeight > 748) doc.addPage();
+    const y = doc.y;
+    doc.roundedRect(50, y - 4, 495, rowHeight, 6).fill(item.status === "matched" ? "#f1faf7" : "#fff7f4");
+    doc.fillColor(color).font(bold).fontSize(9.2).text(item.label, 62, y + 5, { width: 165 });
+    doc.fillColor(ink).font(regular).fontSize(7.6).text(inr(item.pdfAmount), 235, y + 5, { width: 100, align: "right" });
+    doc.text(inr(item.excelAmount), 340, y + 5, { width: 100, align: "right" });
+    doc.fillColor(color).font(bold).fontSize(7.6).text(moneyWithSign(item.variance), 445, y + 5, { width: 90, align: "right" });
+    doc.fillColor(color).font(bold).fontSize(6.8).text(item.status === "matched" ? "MATCHED" : "REVIEW", 62, y + 22, { width: 62, characterSpacing: 0.7 });
+    doc.fillColor(muted).font(regular).fontSize(7.8).text(item.explanation, 128, y + 21, { width: 402, lineGap: 1 });
+    doc.y = y + rowHeight + 7;
+  });
+  doc.moveDown(0.2); rule(); doc.moveDown(0.35);
 
   section("04", "Subscription detail match");
   [["Dynamic Pricing", result.pdf.dynamicPricing], ["SRP", result.pdf.srp], ["Sponsored Listing", result.pdf.sponsored], ["Nova", result.pdf.nova]].forEach(([itemLabel, value]) => { const matched = result.excel.subscriptionItems?.find(item => item.label === itemLabel)?.matched ?? "Review"; tableRow(`${String(itemLabel)}  ·  ${matched}`, inr(Number(value))); });
